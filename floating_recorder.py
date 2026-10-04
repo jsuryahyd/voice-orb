@@ -123,8 +123,8 @@ def paste_text(text):
 def setup_gnome_shortcut():
     schema = 'org.gnome.settings-daemon.plugins.media-keys'
     custom_schema = 'org.gnome.settings-daemon.plugins.media-keys.custom-keybinding'
-    rel_path = '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/floating-recorder/'
-    toggle_bin = os.path.join(HOME, '.local', 'bin', 'floating-recorder-toggle')
+    rel_path = '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/voice-orb/'
+    toggle_bin = os.path.join(HOME, '.local', 'bin', 'voice-orb-toggle')
 
     try:
         out = subprocess.check_output(['gsettings', 'get', schema, 'custom-keybindings'], text=True).strip()
@@ -137,7 +137,7 @@ def setup_gnome_shortcut():
         if not isinstance(bindings, list):
             bindings = []
             
-        subprocess.run(['gsettings', 'set', f"{custom_schema}:{rel_path}", 'name', 'Floating Recorder Toggle'], check=True)
+        subprocess.run(['gsettings', 'set', f"{custom_schema}:{rel_path}", 'name', 'Voice Orb Toggle'], check=True)
         subprocess.run(['gsettings', 'set', f"{custom_schema}:{rel_path}", 'command', toggle_bin], check=True)
         subprocess.run(['gsettings', 'set', f"{custom_schema}:{rel_path}", 'binding', '<Control><Alt>r'], check=True)
         
@@ -280,9 +280,9 @@ def frameOrbits(size, t):
 class FloatingRecorderWindow(Gtk.Window):
     def __init__(self):
         super().__init__(type=Gtk.WindowType.TOPLEVEL)
-        GLib.set_prgname('floating-recorder')
-        GLib.set_application_name('Floating Recorder')
-        self.set_title('Floating Recorder')
+        GLib.set_prgname('voice-orb')
+        GLib.set_application_name('Voice Orb')
+        self.set_title('Voice Orb')
         
         if os.path.isfile(ICON_FILE):
             try: self.set_icon_from_file(ICON_FILE)

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Voice Orb
+Comment=Lightweight Floating Voice Frontend & HTMX Dashboard for whisper.cpp
+Exec=/home/surya/.local/bin/voice-orb
+Icon=/home/surya/development/floating-recorder/icon.png
+Terminal=false
+Type=Application
+Categories=Utility;Audio;AudioVideo;
+Keywords=voice;orb;recorder;whisper;transcription;speech;
+StartupWMClass=voice-orb

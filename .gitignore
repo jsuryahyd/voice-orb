@@ -35,3 +35,5 @@ floating-recorder-history.json
 voice-orb-config.json
 .vscode/
 .idea/
+build_deb/
+*.deb
