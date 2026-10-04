@@ -10,6 +10,8 @@ import json
 import hashlib
 import html
 import urllib.parse
+import subprocess
+import signal
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import threading
 
@@ -24,9 +26,68 @@ DEFAULT_CONFIG = {
     "whisper_cpp": {
         "binary_path": os.path.join(HOME, '.local', 'bin', 'whisper-cli'),
         "model_path": os.path.join(HOME, 'development', 'whisper.cpp', 'models', 'ggml-base.en-q5_1.bin'),
-        "cli_args": "-nt -np -t 4"
+        "cli_args": "-nt -np -t 4",
+        "start_command": os.path.join(HOME, 'development', 'whisper.cpp', 'build', 'bin', 'whisper-server') + f" -m {os.path.join(HOME, 'development', 'whisper.cpp', 'models', 'ggml-base.en-q5_1.bin')} --port 8080"
     }
 }
+
+INTEGRATED_SERVICE_PROCESS = None
+
+def get_service_status():
+    global INTEGRATED_SERVICE_PROCESS
+    if INTEGRATED_SERVICE_PROCESS is not None:
+        poll = INTEGRATED_SERVICE_PROCESS.poll()
+        if poll is None:
+            return True, INTEGRATED_SERVICE_PROCESS.pid
+        else:
+            INTEGRATED_SERVICE_PROCESS = None
+    return False, None
+
+def start_integrated_service(cmd_str):
+    global INTEGRATED_SERVICE_PROCESS
+    is_running, pid = get_service_status()
+    if is_running:
+        return False, f"Service is already running (PID {pid})"
+    
+    cmd_str = cmd_str.strip()
+    if not cmd_str:
+        return False, "No start command specified"
+        
+    try:
+        INTEGRATED_SERVICE_PROCESS = subprocess.Popen(
+            cmd_str,
+            shell=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            preexec_fn=os.setsid
+        )
+        time.sleep(0.5)
+        poll = INTEGRATED_SERVICE_PROCESS.poll()
+        if poll is not None:
+            err = INTEGRATED_SERVICE_PROCESS.stderr.read().decode('utf-8', errors='replace')
+            INTEGRATED_SERVICE_PROCESS = None
+            return False, f"Service exited immediately (code {poll}): {err[:200]}"
+        return True, f"Integrated service started successfully (PID {INTEGRATED_SERVICE_PROCESS.pid})"
+    except Exception as e:
+        INTEGRATED_SERVICE_PROCESS = None
+        return False, f"Failed to start service: {str(e)}"
+
+def stop_integrated_service():
+    global INTEGRATED_SERVICE_PROCESS
+    is_running, pid = get_service_status()
+    if not is_running:
+        return False, "Service is not running"
+    
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+        try:
+            INTEGRATED_SERVICE_PROCESS.wait(timeout=2)
+        except Exception:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+    except Exception as e:
+        print("[Service Manager] Stop error:", e)
+    INTEGRATED_SERVICE_PROCESS = None
+    return True, "Integrated service stopped successfully"
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):
@@ -36,6 +97,10 @@ def load_config():
             cfg = json.load(f)
             if 'whisper_cpp' not in cfg:
                 cfg['whisper_cpp'] = DEFAULT_CONFIG['whisper_cpp'].copy()
+            else:
+                for k, v in DEFAULT_CONFIG['whisper_cpp'].items():
+                    if k not in cfg['whisper_cpp']:
+                        cfg['whisper_cpp'][k] = v
             if 'active_integration' not in cfg:
                 cfg['active_integration'] = 'whisper_cpp'
             return cfg
@@ -193,28 +258,65 @@ def render_history_view_html(records, search_query=""):
     '''
     return toolbar
 
-def render_integrations_html(cfg, success_msg=""):
+def render_integrations_html(cfg, success_msg="", error_msg=""):
     w_cfg = cfg.get('whisper_cpp', {})
     bin_path = html.escape(w_cfg.get('binary_path', ''))
     model_path = html.escape(w_cfg.get('model_path', ''))
     cli_args = html.escape(w_cfg.get('cli_args', '-nt -np -t 4'))
+    start_cmd = html.escape(w_cfg.get('start_command', DEFAULT_CONFIG['whisper_cpp']['start_command']))
     
     msg_html = ""
     if success_msg:
-        msg_html = f'''
+        msg_html += f'''
         <div style="background: rgba(16, 185, 129, 0.15); border: 1px solid var(--accent-emerald); color: var(--accent-emerald); padding: 12px 16px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 600; margin-bottom: 20px;">
             ✓ {html.escape(success_msg)}
         </div>
+        '''
+    if error_msg:
+        msg_html += f'''
+        <div style="background: rgba(239, 68, 68, 0.15); border: 1px solid var(--accent-red); color: var(--accent-red); padding: 12px 16px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 600; margin-bottom: 20px;">
+            ⚠️ {html.escape(error_msg)}
+        </div>
+        '''
+
+    is_running, pid = get_service_status()
+    if is_running:
+        status_color = "var(--accent-emerald)"
+        status_text = f"Running (PID {pid})"
+        service_btn = '''
+        <button type="button" hx-post="/api/integrations/service/stop" hx-target="#main-content" hx-swap="innerHTML" class="btn" style="background: var(--accent-red); color: white; border: none; padding: 8px 16px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 600; cursor: pointer;">
+            ⏹ Stop Service
+        </button>
+        '''
+    else:
+        status_color = "var(--text-muted)"
+        status_text = "Stopped (Decoupled)"
+        service_btn = '''
+        <button type="button" hx-post="/api/integrations/service/start" hx-target="#main-content" hx-swap="innerHTML" class="btn" style="background: var(--accent-emerald); color: white; border: none; padding: 8px 16px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 600; cursor: pointer;">
+            ▶ Start Service
+        </button>
         '''
 
     return f'''
     <div class="integrations-container" style="max-width: 700px; margin: 0 auto; background: var(--bg-card); padding: 24px; border-radius: var(--radius-md); border: 1px solid var(--border);">
         <h2 style="font-size: 18px; margin-bottom: 8px; color: var(--text-primary);">Voice & Transcription Integrations</h2>
         <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 20px;">
-            Configure transcription engine paths and options. Voice Orb dynamically invokes your configured binary and model when audio recording finishes.
+            Configure transcription engine paths, options, and service execution commands. Voice Orb can launch integrated services or run with externally hosted/decoupled backends.
         </p>
 
         {msg_html}
+
+        <div style="background: var(--bg-surface); border: 1px solid var(--border); padding: 16px; border-radius: var(--radius-sm); margin-bottom: 20px;">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+                <div>
+                    <div style="font-size: 14px; font-weight: 600; color: var(--text-primary);">Integrated App Service Manager</div>
+                    <div style="font-size: 12px; color: {status_color}; margin-top: 4px;">● Status: {status_text}</div>
+                </div>
+                <div>
+                    {service_btn}
+                </div>
+            </div>
+        </div>
 
         <form hx-post="/api/integrations" hx-target="#main-content" hx-swap="innerHTML">
             <div style="margin-bottom: 20px;">
@@ -240,10 +342,16 @@ def render_integrations_html(cfg, success_msg=""):
                     <span style="font-size: 11px; color: var(--text-muted); display: block; margin-top: 4px;">Path to whisper.cpp model (base.en, small.en, etc.)</span>
                 </div>
 
-                <div style="margin-bottom: 22px;">
+                <div style="margin-bottom: 16px;">
                     <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: var(--text-secondary);">CLI Flags & Arguments</label>
                     <input type="text" name="cli_args" value="{cli_args}" placeholder="-nt -np -t 4" style="width: 100%; padding: 9px 12px; background: var(--bg-surface); border: 1px solid var(--border); color: var(--text-primary); border-radius: var(--radius-sm); font-size: 13px; font-family: monospace;">
                     <span style="font-size: 11px; color: var(--text-muted); display: block; margin-top: 4px;">Additional arguments (e.g. -nt for no timestamps, -np for no print, -t for CPU threads)</span>
+                </div>
+
+                <div style="margin-bottom: 22px;">
+                    <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: var(--accent-cyan);">Service Start Command (Decoupled Execution)</label>
+                    <input type="text" name="start_command" value="{start_cmd}" placeholder="/path/to/whisper-server -m /path/to/model.bin --port 8080" style="width: 100%; padding: 9px 12px; background: var(--bg-surface); border: 1px solid var(--border); color: var(--text-primary); border-radius: var(--radius-sm); font-size: 13px; font-family: monospace;">
+                    <span style="font-size: 11px; color: var(--text-muted); display: block; margin-top: 4px;">Command executed when clicking 'Start Service' above. Allows running whisper-server / background daemon directly from Voice Orb.</span>
                 </div>
             </div>
 
@@ -836,6 +944,36 @@ class RecorderHTTPRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(html_out.encode('utf-8'))
             return
 
+        if path == '/api/integrations/service/start':
+            cfg = load_config()
+            w_cfg = cfg.get('whisper_cpp', {})
+            start_cmd = w_cfg.get('start_command', DEFAULT_CONFIG['whisper_cpp']['start_command'])
+            ok, msg = start_integrated_service(start_cmd)
+            if ok:
+                html_out = render_integrations_html(cfg, success_msg=msg)
+            else:
+                html_out = render_integrations_html(cfg, error_msg=msg)
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_cors_headers()
+            self.end_headers()
+            self.wfile.write(html_out.encode('utf-8'))
+            return
+
+        if path == '/api/integrations/service/stop':
+            cfg = load_config()
+            ok, msg = stop_integrated_service()
+            if ok:
+                html_out = render_integrations_html(cfg, success_msg=msg)
+            else:
+                html_out = render_integrations_html(cfg, error_msg=msg)
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_cors_headers()
+            self.end_headers()
+            self.wfile.write(html_out.encode('utf-8'))
+            return
+
         if path == '/api/integrations':
             content_length = int(self.headers.get('Content-Length', 0))
             body_data = self.rfile.read(content_length).decode('utf-8')
@@ -845,13 +983,15 @@ class RecorderHTTPRequestHandler(BaseHTTPRequestHandler):
             binary_path = params.get('binary_path', [''])[0].strip()
             model_path = params.get('model_path', [''])[0].strip()
             cli_args = params.get('cli_args', ['-nt -np -t 4'])[0].strip()
+            start_command = params.get('start_command', [''])[0].strip()
 
             cfg = load_config()
             cfg['active_integration'] = active_integration
             cfg['whisper_cpp'] = {
                 'binary_path': binary_path,
                 'model_path': model_path,
-                'cli_args': cli_args
+                'cli_args': cli_args,
+                'start_command': start_command
             }
             save_config(cfg)
 
