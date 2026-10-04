@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# Legacy Electron / Vite files
+node_modules/
+dist/
+package-lock.json
+package.json
+tsconfig*.json
+vite.config.ts
+index.html
+src/
+public/
+main.js
+preload.js
+gjs-app.js
+patch.py
+.oxlintrc.json
+
+# Audio / Caches / Local files
+*.wav
+*.log
+*.pid
+*.bak
+test_*.png
+test_*.py
+floating-recorder-history.json
+voice-orb-config.json
+.vscode/
+.idea/
