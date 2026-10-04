@@ -292,7 +292,7 @@ class FloatingRecorderWindow(Gtk.Window):
         self.set_decorated(False)
         self.set_skip_taskbar_hint(True)
         self.set_skip_pager_hint(True)
-        self.set_type_hint(Gdk.WindowTypeHint.DOCK)
+        self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
         self.set_resizable(False)
 
         # 1. CRITICAL: Never steal focus from active windows / inputs!
@@ -358,6 +358,9 @@ class FloatingRecorderWindow(Gtk.Window):
     def enforce_always_on_top(self):
         self.set_keep_above(True)
         self.stick()
+        gdk_win = self.get_window()
+        if gdk_win:
+            gdk_win.raise_()
         return True
 
     def on_map_event(self, widget, event):
@@ -591,6 +594,10 @@ class FloatingRecorderWindow(Gtk.Window):
         item_web.connect("activate", lambda _: subprocess.Popen(['xdg-open', f"http://127.0.0.1:{getattr(self, 'web_port', 8088)}/"]))
         menu.append(item_web)
 
+        item_service = Gtk.MenuItem(label="Start/Stop Integrated Service")
+        item_service.connect("activate", lambda _: self.toggle_integrated_service())
+        menu.append(item_service)
+
         if self.transcript:
             item_copy = Gtk.MenuItem(label="Copy Last Transcript")
             item_copy.connect("activate", lambda _: self.copy_to_clipboard(self.transcript))
@@ -598,7 +605,7 @@ class FloatingRecorderWindow(Gtk.Window):
 
         menu.append(Gtk.SeparatorMenuItem())
 
-        item_quit = Gtk.MenuItem(label="Quit Floating Recorder")
+        item_quit = Gtk.MenuItem(label="Quit Voice Orb")
         item_quit.connect("activate", lambda _: Gtk.main_quit())
         menu.append(item_quit)
 
@@ -720,11 +727,113 @@ class FloatingRecorderWindow(Gtk.Window):
         return False
 
     def copy_to_clipboard(self, text):
+        if not text:
+            return
+        text_bytes = text.encode('utf-8')
+
+        # 1. Wayland wl-copy
         try:
-            Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(text, -1)
-            Gtk.Clipboard.get(Gdk.SELECTION_PRIMARY).set_text(text, -1)
+            p = subprocess.Popen(['wl-copy'], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            p.communicate(input=text_bytes, timeout=1.5)
+        except Exception:
+            pass
+
+        # 2. X11 xclip
+        try:
+            p = subprocess.Popen(['xclip', '-selection', 'clipboard'], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            p.communicate(input=text_bytes, timeout=1.5)
+        except Exception:
+            pass
+
+        # 3. X11 xsel
+        try:
+            p = subprocess.Popen(['xsel', '-b', '-i'], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            p.communicate(input=text_bytes, timeout=1.5)
+        except Exception:
+            pass
+
+        # 4. GTK Clipboard (with store to persist across focus loss)
+        try:
+            cb = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+            cb.set_text(text, -1)
+            cb.store()
+            cb_pri = Gtk.Clipboard.get(Gdk.SELECTION_PRIMARY)
+            cb_pri.set_text(text, -1)
+            cb_pri.store()
         except Exception as e:
-            print(f"[Floating Recorder] Clipboard error: {e}", file=sys.stderr)
+            print(f"[Floating Recorder] GTK clipboard error: {e}", file=sys.stderr)
+
+    def setup_system_tray(self):
+        self.tray_menu = Gtk.Menu()
+
+        item_web = Gtk.MenuItem(label="Open Web Dashboard (HTMX)")
+        item_web.connect("activate", lambda _: subprocess.Popen(['xdg-open', f"http://127.0.0.1:{getattr(self, 'web_port', 8088)}/"]))
+        self.tray_menu.append(item_web)
+
+        item_toggle = Gtk.MenuItem(label="Toggle Recording (Push-to-Talk)")
+        item_toggle.connect("activate", lambda _: GLib.idle_add(self.toggle_recording))
+        self.tray_menu.append(item_toggle)
+
+        item_service = Gtk.MenuItem(label="Start/Stop Integrated Service")
+        item_service.connect("activate", lambda _: self.toggle_integrated_service())
+        self.tray_menu.append(item_service)
+
+        self.tray_menu.append(Gtk.SeparatorMenuItem())
+
+        item_quit = Gtk.MenuItem(label="Quit Voice Orb")
+        item_quit.connect("activate", lambda _: Gtk.main_quit())
+        self.tray_menu.append(item_quit)
+
+        self.tray_menu.show_all()
+
+        icon_path = os.path.join(HOME, 'development', 'floating-recorder', 'icon.png')
+
+        try:
+            import gi
+            try:
+                gi.require_version('AppIndicator3', '0.1')
+                from gi.repository import AppIndicator3 as appindicator
+            except Exception:
+                gi.require_version('AyatanaAppIndicator3', '0.1')
+                from gi.repository import AyatanaAppIndicator3 as appindicator
+
+            self.indicator = appindicator.Indicator.new(
+                "voice-orb-tray",
+                icon_path if os.path.exists(icon_path) else "microphone-sensitivity-high",
+                appindicator.IndicatorCategory.APPLICATION_STATUS
+            )
+            self.indicator.set_status(appindicator.IndicatorStatus.ACTIVE)
+            self.indicator.set_menu(self.tray_menu)
+            print("[Floating Recorder] System tray initialized (AppIndicator)")
+        except Exception:
+            try:
+                self.status_icon = Gtk.StatusIcon()
+                if os.path.exists(icon_path):
+                    self.status_icon.set_from_file(icon_path)
+                else:
+                    self.status_icon.set_from_icon_name("microphone-sensitivity-high")
+                self.status_icon.set_tooltip_text("Voice Orb — Floating Recorder")
+                self.status_icon.connect("popup-menu", lambda icon, button, time: self.tray_menu.popup(None, None, Gtk.StatusIcon.position_menu, icon, button, time))
+                self.status_icon.connect("activate", lambda icon: subprocess.Popen(['xdg-open', f"http://127.0.0.1:{getattr(self, 'web_port', 8088)}/"]))
+                print("[Floating Recorder] System tray initialized (GtkStatusIcon fallback)")
+            except Exception as e:
+                print("[Floating Recorder] System tray init note:", e)
+
+    def toggle_integrated_service(self):
+        from web_server import get_service_status, start_integrated_service, stop_integrated_service, load_config
+        is_running, pid = get_service_status()
+        if is_running:
+            ok, msg = stop_integrated_service()
+            print(f"[Floating Recorder] Service stop: {msg}")
+        else:
+            cfg = load_config()
+            w_cfg = cfg.get('whisper_cpp', {})
+            start_cmd = w_cfg.get('start_command', '').strip()
+            if start_cmd:
+                ok, msg = start_integrated_service(start_cmd)
+                print(f"[Floating Recorder] Service start: {msg}")
+            else:
+                print("[Floating Recorder] No start command configured in Integrations settings")
 
     def send_desktop_notification(self, text):
         try:
@@ -811,6 +920,22 @@ def main():
     )
     web_server.start()
 
+    # Setup system tray icon & menu
+    win.setup_system_tray()
+
+    # Auto-start integrated app if start_command is configured
+    from web_server import load_config, start_integrated_service, stop_integrated_service, get_service_status
+    cfg = load_config()
+    w_cfg = cfg.get('whisper_cpp', {})
+    start_cmd = w_cfg.get('start_command', '').strip()
+    if start_cmd:
+        print(f"[Floating Recorder] Auto-starting integrated app: {start_cmd}")
+        ok, msg = start_integrated_service(start_cmd)
+        if ok:
+            print(f"[Floating Recorder] {msg}")
+        else:
+            print(f"[Floating Recorder] Integrated app auto-start note: {msg}")
+
     # Handle SIGUSR1 to toggle recording
     def on_sigusr1(signum, frame):
         GLib.idle_add(win.toggle_recording)
@@ -837,6 +962,24 @@ def main():
         Gtk.main()
     finally:
         web_server.stop()
+
+        # Stop integrated app process on exit, notify if failure
+        is_running, pid = get_service_status()
+        if is_running:
+            ok, msg = stop_integrated_service()
+            if not ok:
+                print(f"[Floating Recorder] Warning: {msg}", file=sys.stderr)
+                try:
+                    subprocess.Popen([
+                        'notify-send',
+                        '-u', 'critical',
+                        '-i', 'dialog-warning',
+                        'Voice Orb Warning',
+                        f'Failed to stop integrated app process (PID {pid}): {msg}'
+                    ])
+                except Exception:
+                    pass
+
         if os.path.exists(PID_FILE):
             try: os.remove(PID_FILE)
             except OSError: pass

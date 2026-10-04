@@ -754,7 +754,12 @@ INDEX_HTML = '''<!DOCTYPE html>
                 <button class="nav-tab" id="tab-integrations" hx-get="/api/view/integrations" hx-target="#main-content" onclick="setActiveTab(this)">Integrations</button>
             </nav>
 
-            <div class="header-actions">
+            <div class="header-actions" style="display: flex; align-items: center; gap: 8px;">
+                <div id="header-service-btn" hx-get="/api/service/button" hx-trigger="load, every 3s" hx-swap="outerHTML">
+                    <button class="btn btn-sm" style="background: rgba(16, 185, 129, 0.2); color: var(--accent-emerald); border: 1px solid rgba(16, 185, 129, 0.4); font-size: 12px;">
+                        ▶ Start Service
+                    </button>
+                </div>
                 <button class="btn btn-record" hx-post="/api/toggle" hx-swap="none">
                     <span>●</span> Toggle Record
                 </button>
@@ -840,6 +845,31 @@ class RecorderHTTPRequestHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
+
+        if path == '/api/service/button':
+            is_running, pid = get_service_status()
+            if is_running:
+                html_btn = f'''
+                <div id="header-service-btn" style="display: inline-block;">
+                    <button class="btn btn-sm" style="background: rgba(239, 68, 68, 0.2); color: var(--accent-red); border: 1px solid rgba(239, 68, 68, 0.4); font-size: 12px; cursor: pointer;" hx-post="/api/integrations/service/stop" hx-target="#header-service-btn" hx-swap="outerHTML">
+                        ⏹ Stop Service (PID {pid})
+                    </button>
+                </div>
+                '''
+            else:
+                html_btn = '''
+                <div id="header-service-btn" style="display: inline-block;">
+                    <button class="btn btn-sm" style="background: rgba(16, 185, 129, 0.2); color: var(--accent-emerald); border: 1px solid rgba(16, 185, 129, 0.4); font-size: 12px; cursor: pointer;" hx-post="/api/integrations/service/start" hx-target="#header-service-btn" hx-swap="outerHTML">
+                        ▶ Start Service
+                    </button>
+                </div>
+                '''
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_cors_headers()
+            self.end_headers()
+            self.wfile.write(html_btn.encode('utf-8'))
+            return
 
         if path == '/':
             self.send_response(200)
