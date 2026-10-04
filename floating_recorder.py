@@ -21,7 +21,7 @@ import gi
 gi.require_version('Gtk', '3.0')
 gi.require_version('Gdk', '3.0')
 gi.require_version('Gst', '1.0')
-from gi.repository import Gtk, Gdk, GLib, Gst
+from gi.repository import Gtk, Gdk, GLib, Gst, Gio
 import cairo
 
 from web_server import add_transcription, build_transcription_cmd, EmbeddedWebServer
@@ -277,6 +277,126 @@ def frameOrbits(size, t):
     return dots
 
 
+# --- Pure PyGObject DBus StatusNotifierItem Provider ---
+class DBusStatusNotifierItem:
+    def __init__(self, icon_path, title, on_activate_cb, on_context_cb):
+        self.icon_path = icon_path
+        self.title = title
+        self.on_activate_cb = on_activate_cb
+        self.on_context_cb = on_context_cb
+        
+        self.bus_id = None
+        self.registration_id = None
+        self.node_info = Gio.DBusNodeInfo.new_for_xml("""
+        <node>
+          <interface name="org.kde.StatusNotifierItem">
+            <property name="Category" type="s" access="read"/>
+            <property name="Id" type="s" access="read"/>
+            <property name="Title" type="s" access="read"/>
+            <property name="Status" type="s" access="read"/>
+            <property name="WindowId" type="i" access="read"/>
+            <property name="IconName" type="s" access="read"/>
+            <property name="OverlayIconName" type="s" access="read"/>
+            <property name="AttentionIconName" type="s" access="read"/>
+            <property name="IconThemePath" type="s" access="read"/>
+            <property name="Menu" type="o" access="read"/>
+            <property name="ItemIsMenu" type="b" access="read"/>
+            <method name="ContextMenu">
+              <arg name="x" type="i" direction="in"/>
+              <arg name="y" type="i" direction="in"/>
+            </method>
+            <method name="Activate">
+              <arg name="x" type="i" direction="in"/>
+              <arg name="y" type="i" direction="in"/>
+            </method>
+            <method name="SecondaryActivate">
+              <arg name="x" type="i" direction="in"/>
+              <arg name="y" type="i" direction="in"/>
+            </method>
+            <method name="Scroll">
+              <arg name="delta" type="i" direction="in"/>
+              <arg name="orientation" type="s" direction="in"/>
+            </method>
+            <signal name="NewTitle"/>
+            <signal name="NewIcon"/>
+            <signal name="NewStatus">
+              <arg name="status" type="s"/>
+            </signal>
+          </interface>
+        </node>
+        """)
+
+    def start(self):
+        try:
+            self.bus_id = Gio.bus_own_name(
+                Gio.BusType.SESSION,
+                "org.kde.StatusNotifierItem-voice-orb",
+                Gio.BusNameOwnerFlags.NONE,
+                self.on_bus_acquired,
+                self.on_name_acquired,
+                None
+            )
+            return True
+        except Exception as e:
+            print("[Voice Orb] DBus SNI start error:", e)
+            return False
+
+    def on_bus_acquired(self, conn, name):
+        def handle_method_call(connection, sender, object_path, interface_name, method_name, parameters, invocation):
+            if method_name == 'Activate':
+                if self.on_activate_cb:
+                    GLib.idle_add(self.on_activate_cb)
+                invocation.return_value(None)
+            elif method_name == 'ContextMenu':
+                if self.on_context_cb:
+                    x, y = parameters.unpack() if parameters else (0, 0)
+                    GLib.idle_add(self.on_context_cb, x, y)
+                invocation.return_value(None)
+            else:
+                invocation.return_value(None)
+
+        def handle_get_property(connection, sender, object_path, interface_name, property_name):
+            if property_name == 'Category':
+                return GLib.Variant('s', 'ApplicationStatus')
+            elif property_name == 'Id':
+                return GLib.Variant('s', 'voice-orb')
+            elif property_name == 'Title':
+                return GLib.Variant('s', self.title)
+            elif property_name == 'Status':
+                return GLib.Variant('s', 'Active')
+            elif property_name == 'WindowId':
+                return GLib.Variant('i', 0)
+            elif property_name == 'IconName':
+                return GLib.Variant('s', 'audio-input-microphone')
+            elif property_name == 'IconThemePath':
+                return GLib.Variant('s', os.path.dirname(self.icon_path))
+            elif property_name == 'ItemIsMenu':
+                return GLib.Variant('b', True)
+            return None
+
+        self.registration_id = conn.register_object(
+            "/StatusNotifierItem",
+            self.node_info.interfaces[0],
+            handle_method_call,
+            handle_get_property,
+            None
+        )
+
+    def on_name_acquired(self, conn, name):
+        for service in ('org.freedesktop.StatusNotifierWatcher', 'org.kde.StatusNotifierWatcher'):
+            try:
+                msg = Gio.DBusMessage.new_method_call(
+                    service,
+                    '/StatusNotifierWatcher',
+                    service,
+                    'RegisterStatusNotifierItem'
+                )
+                msg.set_body(GLib.Variant('(s)', (name,)))
+                conn.send_message(msg, Gio.DBusSendMessageFlags.NONE)
+            except Exception:
+                pass
+
+
 class FloatingRecorderWindow(Gtk.Window):
     def __init__(self):
         super().__init__(type=Gtk.WindowType.TOPLEVEL)
@@ -340,6 +460,7 @@ class FloatingRecorderWindow(Gtk.Window):
         )
 
         self.connect('draw', self.on_draw)
+        self.connect('realize', self.on_realize)
         self.connect('button-press-event', self.on_button_press)
         self.connect('button-release-event', self.on_button_release)
         self.connect('map-event', self.on_map_event)
@@ -349,15 +470,28 @@ class FloatingRecorderWindow(Gtk.Window):
         # Animation timer (30 FPS)
         self.timer_id = GLib.timeout_add(33, self.on_animation_tick)
 
-        # Watchdog to enforce always-on-top
+        # Watchdog to enforce always-on-top & taskbar skip
         self.keep_above_watchdog = GLib.timeout_add_seconds(3, self.enforce_always_on_top)
 
         # Start raw /dev/input thread for Right Ctrl push-to-talk
         threading.Thread(target=self.raw_input_listener_thread, daemon=True).start()
 
+    def update_taskbar_hints(self):
+        self.set_skip_taskbar_hint(True)
+        self.set_skip_pager_hint(True)
+        gdk_win = self.get_window()
+        if gdk_win:
+            gdk_win.set_skip_taskbar_hint(True)
+            gdk_win.set_skip_pager_hint(True)
+
+    def on_realize(self, widget):
+        self.update_taskbar_hints()
+        self.enforce_always_on_top()
+
     def enforce_always_on_top(self):
         self.set_keep_above(True)
         self.stick()
+        self.update_taskbar_hints()
         gdk_win = self.get_window()
         if gdk_win:
             gdk_win.raise_()
@@ -365,6 +499,7 @@ class FloatingRecorderWindow(Gtk.Window):
 
     def on_map_event(self, widget, event):
         self.enforce_always_on_top()
+        self.update_taskbar_hints()
         self.update_input_shape()
         return False
 
@@ -788,6 +923,8 @@ class FloatingRecorderWindow(Gtk.Window):
 
         icon_path = os.path.join(HOME, 'development', 'floating-recorder', 'icon.png')
 
+        # Try AppIndicator3 / AyatanaAppIndicator3 first, then DBus SNI, then Gtk.StatusIcon fallback
+        tray_success = False
         try:
             import gi
             try:
@@ -804,20 +941,38 @@ class FloatingRecorderWindow(Gtk.Window):
             )
             self.indicator.set_status(appindicator.IndicatorStatus.ACTIVE)
             self.indicator.set_menu(self.tray_menu)
-            print("[Floating Recorder] System tray initialized (AppIndicator)")
+            tray_success = True
+            print("[Voice Orb] System tray initialized (AppIndicator)")
         except Exception:
+            pass
+
+        if not tray_success:
+            try:
+                self.sni = DBusStatusNotifierItem(
+                    icon_path=icon_path,
+                    title="Voice Orb",
+                    on_activate_cb=lambda: subprocess.Popen(['xdg-open', f"http://127.0.0.1:{getattr(self, 'web_port', 8088)}/"]),
+                    on_context_cb=lambda x, y: self.tray_menu.popup_at_pointer(None)
+                )
+                if self.sni.start():
+                    tray_success = True
+                    print("[Voice Orb] System tray initialized (Pure PyGObject DBus StatusNotifierItem)")
+            except Exception as e:
+                print("[Voice Orb] DBus SNI fallback note:", e)
+
+        if not tray_success:
             try:
                 self.status_icon = Gtk.StatusIcon()
                 if os.path.exists(icon_path):
                     self.status_icon.set_from_file(icon_path)
                 else:
                     self.status_icon.set_from_icon_name("microphone-sensitivity-high")
-                self.status_icon.set_tooltip_text("Voice Orb — Floating Recorder")
+                self.status_icon.set_tooltip_text("Voice Orb")
                 self.status_icon.connect("popup-menu", lambda icon, button, time: self.tray_menu.popup(None, None, Gtk.StatusIcon.position_menu, icon, button, time))
                 self.status_icon.connect("activate", lambda icon: subprocess.Popen(['xdg-open', f"http://127.0.0.1:{getattr(self, 'web_port', 8088)}/"]))
-                print("[Floating Recorder] System tray initialized (GtkStatusIcon fallback)")
+                print("[Voice Orb] System tray initialized (GtkStatusIcon fallback)")
             except Exception as e:
-                print("[Floating Recorder] System tray init note:", e)
+                print("[Voice Orb] System tray init note:", e)
 
     def toggle_integrated_service(self):
         from web_server import get_service_status, start_integrated_service, stop_integrated_service, load_config
