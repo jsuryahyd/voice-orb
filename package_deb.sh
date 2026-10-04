@@ -63,5 +63,8 @@ Keywords=voice;orb;recorder;whisper;transcription;speech;
 StartupWMClass=voice-orb
 EOF
 
+mkdir -p "$PKG_DIR/usr/share/gnome-shell/extensions/voice-orb@surya.dev"
+cp -r "$SCRIPT_DIR/extension/"* "$PKG_DIR/usr/share/gnome-shell/extensions/voice-orb@surya.dev/"
+
 dpkg-deb --build "$PKG_DIR" "$SCRIPT_DIR/voice-orb_1.0.0_all.deb"
 echo "[DEB Packager] Created standalone package: $SCRIPT_DIR/voice-orb_1.0.0_all.deb"

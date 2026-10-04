@@ -22,6 +22,15 @@ sed -e "s|/home/surya/development/floating-recorder|$SCRIPT_DIR|g" \
     -e "s|/home/surya/.local/bin|$BIN_DIR|g" \
     "$SCRIPT_DIR/voice-orb.desktop" > "$APP_DIR/voice-orb.desktop"
 
+echo "[Voice Orb Installer] Installing GNOME Shell extension..."
+EXT_DIR="$HOME/.local/share/gnome-shell/extensions/voice-orb@surya.dev"
+mkdir -p "$EXT_DIR"
+cp -r "$SCRIPT_DIR/extension/"* "$EXT_DIR/"
+
+if command -v gnome-extensions >/dev/null 2>&1; then
+    gnome-extensions enable voice-orb@surya.dev 2>/dev/null || true
+fi
+
 chmod +x "$SCRIPT_DIR/start.sh" "$SCRIPT_DIR/stop.sh" "$SCRIPT_DIR/toggle.sh" "$SCRIPT_DIR/floating_recorder.py"
 
 if command -v update-desktop-database >/dev/null 2>&1; then

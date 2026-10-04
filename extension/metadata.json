@@ -1,0 +1,10 @@
+{
+  "uuid": "voice-orb@surya.dev",
+  "name": "Voice Orb Top Bar & Taskbar Manager",
+  "description": "System tray top bar panel indicator and taskbar manager for Voice Orb",
+  "shell-version": [
+    "40", "41", "42", "43", "44", "45", "46", "47"
+  ],
+  "url": "https://github.com/jsuryahyd/voice-orb",
+  "version": 1
+}
